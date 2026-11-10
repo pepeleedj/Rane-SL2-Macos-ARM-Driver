@@ -5,6 +5,7 @@
 //   'sl2s'  the driver's status (SL2StatusPacket, SL2Status.h)
 //   'sl2h'  a 64-byte HID command to the box; reading it back returns the box's reply
 //   'sl2m'  the peak level of each input and output channel since the last read
+//   'sl2i'  the input safety offset setting, in microseconds (set with nothing streaming)
 // and the device's standard output volume.
 // Built by tools/controlpanel/build-app.sh (make controlpanel).
 
@@ -33,6 +34,7 @@ enum SL2Driver {
     }
     static let propStatus = fourCC("sl2s")
     static let propHID = fourCC("sl2h")
+    static let propInSafety = fourCC("sl2i")
 
     static func address(_ selector: AudioObjectPropertySelector,
                         _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
@@ -172,6 +174,18 @@ enum SL2Driver {
     /// Audio MIDI Setup, where each output channel's volume is set.
     static let audioMIDISetup = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.audio.AudioMIDISetup")
 
+    /// Set the input safety offset (microseconds). The driver takes it only with nothing streaming,
+    /// then has CoreAudio set the device up again with it, which takes about half a second.
+    @discardableResult
+    static func setInputSafety(_ dev: AudioObjectID, _ us: Int) -> Bool {
+        var addr = address(propInSafety)
+        let number = us as CFNumber
+        var ref = Unmanaged.passUnretained(number)   // the property's value is the CFNumberRef itself
+        return withExtendedLifetime(number) {
+            AudioObjectSetPropertyData(dev, &addr, 0, nil, UInt32(MemoryLayout<Unmanaged<CFNumber>>.size), &ref)
+        } == noErr
+    }
+
     static func setSampleRate(_ dev: AudioObjectID, _ rate: Double) {
         var addr = address(kAudioDevicePropertyNominalSampleRate)
         var value = rate
@@ -216,6 +230,14 @@ struct BoxState: Equatable {
         let db: Float
     }
     var muted: Bool?         // the output mute; nil if none
+    var input: InputHealth?  // nil from a driver too old to report it
+    struct InputHealth: Equatable {
+        let safetyUs: Int        // the input safety offset (the setting, as CoreAudio is using it)
+        let earlyRead: UInt32    // 0 not judged yet, 1 working, 2 not working
+        let hubs: Int            // USB hubs between the box and the Mac
+        let dropouts: UInt64     // IO cycles in which input wasn't captured in time, since the box connected
+                                 // or the input safety offset changed
+    }
 }
 
 enum PanelState: Equatable {
@@ -238,6 +260,8 @@ func repeatingTimer(every interval: TimeInterval, _ body: @escaping @MainActor (
 final class PanelModel: ObservableObject {
     @Published var state: PanelState = .noBox
     @Published var driverVersion: String?
+    /// A short-lived message about something the user just tried (shown with the warnings).
+    @Published var notice: String?
     /// The level meters, which read the device this model finds (not published: they redraw alone).
     let meters = MeterModel()
     private var timer: Timer?
@@ -308,7 +332,10 @@ final class PanelModel: ObservableObject {
             outputLatencyMs: Double(SL2Driver.latencyFrames(dev, kAudioObjectPropertyScopeOutput)) * 1000 / rate,
             inputLatencyMs: Double(SL2Driver.latencyFrames(dev, kAudioObjectPropertyScopeInput)) * 1000 / rate,
             volume: volume.map { BoxState.Volume(scalar: $0.scalar, db: $0.db) },
-            muted: SL2Driver.muted(dev)))
+            muted: SL2Driver.muted(dev),
+            input: s.in_safety_us == 0 ? nil : BoxState.InputHealth(
+                safetyUs: Int(s.in_safety_us), earlyRead: s.early_read,
+                hubs: Int(s.hub_depth), dropouts: s.in_dropouts)))
     }
 
     /// Set the main output volume (a slider position, 0...1); the menu bar and Audio MIDI Setup follow.
@@ -331,6 +358,20 @@ final class PanelModel: ObservableObject {
         SL2Driver.sendHidi(dev, on ? 0x90 : 0x80, SL2Driver.noteThru[deck])
         // The box reports the change within a few milliseconds; the driver keeps it in its status.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.refresh() }
+    }
+
+    /// Change the input safety offset. CoreAudio sets the device up again with it (the window shows the
+    /// SL 2 as gone for a moment).
+    func setInputSafety(_ us: Int) {
+        guard let dev = device else { return }
+        // Refused if an app started using the SL 2 since the window last looked: say so, for a while.
+        if !SL2Driver.setInputSafety(dev, us) {
+            notice = "The input safety offset wasn't changed: an app is using the SL 2."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.notice = nil }
+            refresh()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.refresh() }
     }
 
     /// Change the rate through CoreAudio: the driver changes the box's rate with the HAL's.
@@ -451,6 +492,9 @@ struct PanelView: View {
                 connected(box)
             }
         }
+        // Every piece of text can be selected and copied (a serial number, a warning to paste into a
+        // report); controls' own labels stay controls.
+        .textSelection(.enabled)
     }
 
     /// One column of the connected view: a grouped form sized to its sections, so it never scrolls.
@@ -483,6 +527,10 @@ struct PanelView: View {
             LabeledContent("Firmware", value: box.firmware)
             LabeledContent("Serial number", value: box.serial)
             LabeledContent("Driver", value: model.driverVersion ?? "—")
+            if let input = box.input {
+                LabeledContent("USB", value: input.hubs == 0 ? "Connected directly" :
+                                             input.hubs == 1 ? "Through 1 hub" : "Through \(input.hubs) hubs")
+            }
         }
         Section {
             Picker("Sample rate", selection: Binding(get: { box.sampleRate },
@@ -492,10 +540,19 @@ struct PanelView: View {
             }
             LabeledContent("Output latency", value: String(format: "%.1f ms", box.outputLatencyMs))
             LabeledContent("Input latency", value: String(format: "%.1f ms", box.inputLatencyMs))
+            if let input = box.input {
+                Picker("Input safety offset", selection: Binding(get: { input.safetyUs },
+                                                                 set: { model.setInputSafety($0) })) {
+                    ForEach(Self.safetyChoices(input.safetyUs), id: \.self) { us in
+                        Text(Self.ms(us) + Self.safetyNote(us)).tag(us)
+                    }
+                }
+                .disabled(box.streaming)
+            }
         } header: {
             Text("Audio")
         } footer: {
-            Text("Latency as the driver reports it, not counting each app's own buffer (in Serato DJ: USB Buffer Size).")
+            Text("Latency as the driver reports it, not counting each app's own buffer (in Serato DJ: USB Buffer Size). Raise the input safety offset if you hear gaps in the input.")
                 .foregroundStyle(.secondary)
         }
         Section {
@@ -512,6 +569,34 @@ struct PanelView: View {
         }
     }
 
+    /// The input safety offsets to choose from, with the current setting among them.
+    static func safetyChoices(_ setting: Int) -> [Int] {
+        let choices = [500, 1000, 1500, 2000, 3000, 4000, 8000]
+        return choices.contains(setting) ? choices : (choices + [setting]).sorted()
+    }
+    /// Below the default, input can drop out under load (measured: at 1 ms, 0.23 ms of margin left).
+    static func safetyNote(_ us: Int) -> String {
+        us == 1500 ? " (default)" : us < 1500 ? " (not recommended)" : ""
+    }
+    static func ms(_ us: Int) -> String {
+        us % 1000 == 0 ? "\(us / 1000) ms" : String(format: "%.1f ms", Double(us) / 1000)
+    }
+
+    /// What the panel warns about: input the driver couldn't read early, and input dropouts.
+    static func warnings(_ box: BoxState) -> [String] {
+        guard let input = box.input else { return [] }
+        var w: [String] = []
+        // Where the early read doesn't work, input can drop out below 8 ms (completion delivery).
+        if input.earlyRead == 2 && input.safetyUs < 8000 {
+            w.append("Input can't be read early on this Mac, so it can drop out at \(ms(input.safetyUs)). Set the input safety offset to 8 ms.")
+        }
+        if input.dropouts > 0 {
+            let times = input.dropouts == 1 ? "once" : "\(input.dropouts) times"
+            w.append("Input dropped out \(times) since the SL 2 was connected or the input safety offset changed. If you hear gaps in the input, raise the input safety offset.")
+        }
+        return w
+    }
+
     /// The Outputs footer, with "Audio MIDI Setup" a link that opens it (plain text if it can't be found).
     private var outputsFooter: AttributedString {
         var text = AttributedString("The volume applies to everything the SL 2 plays, Serato's decks included, like the volume keys. Set each output channel's own volume in ")
@@ -522,9 +607,19 @@ struct PanelView: View {
         return text
     }
 
-    /// The right column: the input and output levels, and the output volume.
+    /// The right column: any warnings, the input and output levels, and the output volume.
     @ViewBuilder
     private func levelSections(_ box: BoxState) -> some View {
+        let warnings = (model.notice.map { [$0] } ?? []) + Self.warnings(box)
+        if !warnings.isEmpty {
+            Section {
+                ForEach(warnings, id: \.self) { text in
+                    Label(text, systemImage: "exclamationmark.triangle.fill")
+                        .symbolRenderingMode(.multicolor)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
         Section {
             DeckMeterRow(meters: model.meters, name: Self.deckNames[0], left: 0, right: 1)
             DeckMeterRow(meters: model.meters, name: Self.deckNames[1], left: 2, right: 3)

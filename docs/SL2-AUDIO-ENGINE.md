@@ -34,20 +34,31 @@ unless noted.
 |---|---|---|---|---|
 | Baseline (`0672a0e`, before the latency work) | 128 frames | 76 ms | ~105 ms | — |
 | Shallow queue, aligned timeline, 3 transfers | 128 frames | 4.2 ms | ~32 ms | dropouts about once a minute |
-| **Deep schedule with late writes** (this design), measured | 128 frames | 2.8 ms | **18.6 ms** | **none in 10 min, idle and all cores loaded** |
-| Deep schedule, 48 kHz, release build | 128 frames | 2.7 ms | **18.0 ms** | none in a 10 s check, idle |
-| Deep schedule, Serato "USB buffer size" 1 ms | ~1 ms | — | **≈15 ms** (calculated) | none heard; driver counters clean |
+| Deep schedule with late writes, capture from completions | 128 frames | 2.8 ms | 18.6 ms | none in 10 min, idle and all cores loaded |
+| Deep schedule, 48 kHz, release build | 128 frames | 2.7 ms | 18.0 ms | none in a 10 s check, idle |
+| Deep schedule, Serato "USB buffer size" 1 ms | 45 frames (1 ms) | — | ≈15 ms (calculated) | none heard; driver counters clean |
+| **Deep schedule + early capture read** (this design), measured | 128 frames | 2.9 ms | **12.2 ms** | none in 10 min, idle and all cores loaded |
+| **Deep schedule + early capture read**, measured | **64 frames** | 2.9 ms | **9.3 ms** | none in 150 s with six x264 encodes running |
+| Deep schedule + early capture read, 48 kHz, release build | 64 / 128 frames | 2.8 ms | **8.9 / 11.6 ms** | none in a 30 s check, idle |
+| Deep schedule + early capture read, release build: Serato's 1 ms | **45 frames** | 2.8 ms | **8.3 ms** | none in 60 s idle and 150 s with six x264 encodes; no input dropouts |
+
+**Serato's "USB buffer size" is the CoreAudio IO buffer size.** Serato DJ Pro (2.5.5, from its code) turns
+the setting into frames (1 ms is 45 frames at 44.1 kHz, after rounding to the device's alignment) and sets
+`kAudioDevicePropertyBufferFrameSize` through PortAudio, restarting its stream. It tells neither SL2Api
+nor the box. The HAL owns that property; the plug-in only sees IO cycles of that size. So it is the
+"IO buffer" in the tables here, which counts twice in the round trip, and the input safety offset (counted
+once) is separate from it.
 
 **Blind test.** Serato DJ was run with real decks and timecode, with USB buffer size at 1 ms. The two builds,
 `0672a0e` and the deep-schedule build, were assigned to "A" and "B" at random. The tester judged A "much
 laggier" than B, conclusively. A was the old driver.
 
-At the 1 ms buffer setting, the remaining round trip breaks down as:
+At a 64-frame IO buffer, the round trip breaks down as:
 
 | Part | Time |
 |---|---|
-| 2 × IO buffer | ~2 ms |
-| input safety offset | 8 ms |
+| 2 × IO buffer | 2.9 ms |
+| input safety offset | 1.5 ms |
 | output safety offset | 2 ms |
 | output latency | 1.5 ms |
 | the box (FIFO, converters) | ~1.3 ms |
@@ -116,11 +127,57 @@ At the 1 ms buffer setting, the remaining round trip breaks down as:
   completion. After a stall longer than 64 ms, the next frame has passed: the request is re-anchored
   `DP_START_LEAD` frames ahead of the bus, and the frames skipped are filled when the next completion
   arrives (logged as "Capture: N ms not captured").
-- **The input safety offset is 8 ms. It was measured, not assumed.**
-  - Capture handlers ran at most 1.5 ms after their frame's bus start 99.99% of the time.
-  - The worst cases were 5–7.6 ms, and they happened when the Mac was **idle**, not loaded (3.95 ms
-    worst under full load).
-  - The HAL only reads safety offsets when it sets the device up. Changing them takes a coreaudiod restart.
+- **ReadInput doesn't wait for completions (the early read).**
+  - Completions are delivered late: capture handlers ran at most 1.5 ms after their frame's bus start
+    99.99% of the time, but up to 7.6 ms idle, and 12–18 ms with the Mac swapping. An input that
+    waited for them would need a safety offset that long, and a longer stall would still leave a gap.
+  - The data itself is on time. The controller writes each packet into the transfer's buffer during the
+    packet's own microframe: measured, every packet was in memory before its microframe ended, with
+    heap and `ioDataWithCapacity:` buffers alike.
+  - So ReadInput, on the HAL's real-time IO thread, reads the packets that have arrived since the last
+    completion out of the queued buffers and places them in the ring itself (`cap_read_early`), once
+    their microframe has been over for one more microframe (a packet can be caught part-written during
+    its own).
+  - A packet's frame count is only reported with its completion, so each buffer is filled with `0xFF`
+    before it is queued. A real sample's low byte is always 0 (24-bit audio, left-justified), so the
+    frames whose first byte reads 0 are the ones that arrived. A packet with none is left to the
+    completion (missing or errored), as is one the kernel has already marked errored in the transfer's
+    transaction list, which it updates in our array 0–2 ms after the microframe.
+  - The early reader starts from the completions' progress (the next USB frame, and the timeline position
+    of its first frame) and places frames where the completion will. The completion stays in charge: it
+    writes the same frames again and keeps the clock tracking, steering, meters and silence fills. If it
+    placed frames differently, the early reader's position for that frame no longer matches and it
+    starts again from the completion's.
+  - A buffer is tagged with its USB frame while queued and 0 while it is refilled. The early reader checks
+    the tag before and after each packet, so a refilled buffer never reaches the ring.
+- **The input safety offset is 1.5 ms by default. It was measured, not assumed.**
+  - With the early read, the least margin (how far ahead of the read the captured frames reached) was the
+    offset less about 0.35 ms idle, and less 0.75–0.9 ms under load. At 1 ms the margin under load fell
+    to 0.23 ms; at 1.5 ms it stayed 0.6–0.73 ms (5 min idle, 5 min all cores busy, six x264 encodes).
+  - It is a setting (`sl2i`, 0.5–20 ms; the SL 2 Control Panel and `sl2panel safety <ms>` set it), kept in
+    the plug-in's storage, which the HAL keeps across restarts.
+  - The HAL only reads safety offsets when it sets the device up, so the setting changes only with nothing
+    streaming. The driver then takes the device out of the device list for half a second, which sets it up
+    again (`relist_device`). The value the property reports changes only at that moment, so it is always
+    the value the HAL is using.
+- **Where the early read doesn't work, the driver says so.**
+  - Each stream judges the early read once it has a second of capture and ReadInput has asked for half a
+    second of it (`early_read_judge`; an app that only plays doesn't read input, and leaves it unjudged).
+    It works if it placed frames and the completions found under 1% of them different. This needs no
+    signal at the inputs: silence is all zero bytes, distinct from the marks.
+  - If it doesn't work (a USB controller that copies the data in only at completion, or a box whose pad
+    bytes aren't 0), the driver logs it and reports it in the status, and the SL 2 Control Panel asks for an
+    input safety offset of 8 ms, which covers completion delivery. The driver doesn't change the setting by
+    itself: applying it takes the device out of the device list for a moment, which apps holding it idle
+    (or the system's default output) would see as the device going away. Changing the setting has the next
+    stream judge afresh. `sl2dbg noearly 1` *(debug)* switches the early reader off to test this.
+- **Input health is reported.** The status (`sl2s`) carries the offset in use, the early read's judgement,
+  the IO cycles in which input wasn't captured in time (ReadInput returned silence) since the device was set
+  up (the box connected, or the offset changed: dropouts at another offset say nothing about this one),
+  and how many USB hubs the box is behind (its ancestors in the I/O Registry that are USB
+  devices). The SL 2 Control Panel warns about the first three and shows the hub count. A high-speed hub
+  adds no latency that matters here (it forwards packets within microseconds, inside the 125 us
+  microframe schedule); every figure in this document was measured through two.
 
 ### 3. Playback: deep schedule with late writes (`dp_*`)
 
@@ -192,14 +249,14 @@ At the 1 ms buffer setting, the remaining round trip breaks down as:
 | Output device latency | 1.5 ms (66 frames at 44.1 kHz) |
 | Output safety offset | 2 ms |
 | Input device latency | 32 frames |
-| Input safety offset | 8 ms |
+| Input safety offset | 1.5 ms (the default setting; 8 ms recommended where the early read doesn't work) |
 | Output stream latency | 32 frames |
 | Input stream latency | 0 |
 | Zero-timestamp period | 16384 frames |
 
 Clients add device and stream latency, so the reported total is 66 + 32 + 32 + 0 = 130 frames, or 2.95 ms.
-The loopback measures 2.8 ms (`rtlat`'s unreported latency, since input moved to bus time): the report is
-within 0.15 ms, on the safe side. Most of the 2.8 ms is fixed by design (the 1.5 ms output latency) or by
+The loopback measures 2.8–2.9 ms (`rtlat`'s unreported latency, since input moved to bus time): the report
+is within 0.15 ms, on the safe side. Most of it is fixed by design (the 1.5 ms output latency) or by
 the box's converters and buffers, so it should not vary between Macs; a different USB controller might
 shift it slightly. Only 44.1 kHz has been measured.
 
@@ -234,7 +291,7 @@ deck and not the other.
 Measured through the loopback cable (44.1 kHz, 128-frame buffer): clicks drop by exactly the volume
 (−20.0 dB at −20 dB), whether set on the channel or with the volume keys (which set the master and
 leave the channels' own levels), a level set on another channel leaves them alone, and they are gone
-when muted. The DVS round trip at 0 dB is 18.6 ms, the
+when muted. The volume control doesn't change the DVS round trip: at 0 dB it measures the
 same as without the volume control. `rtlat` reads quieter clicks one to three frames later, but a click at half
 amplitude reads the same with no volume applied: its fixed detection threshold is crossed by the
 converters' pre-ringing, which is smaller on a quieter click. It is not latency.
@@ -266,7 +323,7 @@ converters' pre-ringing, which is smaller on a quieter click. It is not latency.
 - **StartIO fails** (`kAudioHardwareNotRunningError`) when the box can't be opened, rather than running a
   timeline with no box behind it.
 
-### 7. The HID path for clients (`sl2h`, `sl2s`, `sl2q`, `sl2m`)
+### 7. The HID path for clients (`sl2h`, `sl2s`, `sl2q`, `sl2m`, `sl2i`)
 
 - **`sl2h`:** writing a 64-byte command sends it to the box and keeps the reply for the calling process; the
   next read returns it once, and a read never sends anything. The driver tags each request with its own
@@ -277,7 +334,11 @@ converters' pre-ringing, which is smaller on a quieter click. It is not latency.
 - **`sl2q`:** the box's unsolicited `0x40` reports and the driver's own events (`0x4F`: sample rate), kept
   in a ring of 256 with a read position per client process, so every client gets every report.
 - **`sl2s`:** the status (connected, streaming, rate, version, serial, thru and LINE/PHONO, frame counts,
-  boot mode). Reading it has no side effects.
+  boot mode, debug build, and the input health: the input safety offset in use, the early read's judgement,
+  input dropouts and USB hubs). Reading it has no side effects. Fields are only ever
+  added at the end, so a client copies what it knows and older drivers read as zeros.
+- **`sl2i`:** the input safety offset setting, in microseconds, as a CFNumber. Writing it is refused while a
+  stream runs (see Capture).
 - **`sl2m`:** level meters for the control panel: the peak level (0–1) of each input channel as captured and
   each output channel as sent (after the volume) since the last read, which resets them. The driver
   measures only while some client has read them in the last second, so they cost nothing otherwise. There
@@ -316,10 +377,18 @@ converters' pre-ringing, which is smaller on a quieter click. It is not latency.
 - Completion delivery stalls happen about once a minute, of 5–11 ms, and they are worst when the Mac is idle.
 - `ioDataWithCapacity:` buffers keep their interface claimed. Release them before the next stream claims it.
 - The HAL reads safety offsets only at device setup. Neither `PropertiesChanged` nor a no-op configuration
-  change refreshes them.
+  change refreshes them; taking the device out of the device list and putting it back does.
+- A HAL plug-in can keep settings across restarts in the storage the HAL keeps for it (`WriteToStorage`,
+  `CopyFromStorage`).
 - An isochronous transfer scheduled 4 frames ahead was refused (`0xe00002ee`) on an M-series Mac. Start 8 ahead.
 - Capture completions are stamped about 0.9 ms into their frame (the last packet is microframe 7, at
   0.875 ms), so the stack stamps at the bus. Only delivery to the handler is delayed.
+- Isochronous IN data is in the transfer's buffer before its microframe ends, long before the completion,
+  with plain heap buffers too: the controller writes straight into them. The kernel also updates the
+  transaction list in our own array (`completeCount`, `timeStamp`) before the completion, 0–2 ms after
+  the microframe; the completion handler is passed that same array.
+- Under a load that makes the Mac swap (six 4K x264 encodes, 48 GB RAM), the HAL reports IO overloads
+  at a 64-frame buffer whatever the driver's safety offsets; the driver had every frame ready.
 - When a device disappears while a client streams, the HAL sends that client's StopIO afterwards.
 - A HAL client's property query can be answered by the HAL from its own model of the device without reaching
   the plug-in (e.g. `OwnedObjects` with a class qualifier).
@@ -337,6 +406,7 @@ Entries refer to the [bug catalogue](#bug-catalogue).
 |---|---|
 | **Directly**: shared code or a shared HAL/USB pattern | 1 sample-rate handshake; 2 fixed timeline anchor; 4 clock tracking; 5, 31 reporting real latency (measure with `rtlat`); 15 bus time; 19, 20 capture gaps filled with silence; 21 ReadInput's write head; 22, 23 teardown on the USB queue and stream generations; 24, 25 failed opens and unplug while streaming; 26 opening at connect; 27 property buffer sizes; 28 the `sl2h` passthrough; 30 the zero-timestamp period; 39 the status frame count; 35 device listed only while attached; 38 retry a refused first open |
 | **With the deep schedule** (late writes into queued transfers) | 7, 9, 10, 11, 12, 13, 14, 16, 17, 18 |
+| **Check the device first** (the early capture read relies on the low byte of each sample being 0) | 44 |
 | **SL 2 only, or check on the SL 3/SL 4 first** | 8 input safety value (measure); 29 the heartbeat (check the SL 3/SL 4 firmware); 36 LINE/PHONO report (note `0x61`); 37 thru at connect (board input PC7); 32–34, 40–43 SL2Api, `sl2panel` and the test tools (each device's API has its own signatures; the SL 3 uses `0x10` for its version) |
 
 ## Bug catalogue
@@ -391,7 +461,7 @@ build; *(hook)* uses `tools/latency/bin/sl2dbg`.
 8. **Input safety offset was 20 ms on a wrong premise.**
    - Cause: it was based on the belief that capture completions arrive 10–20 ms late. Measured from bus
      time, 99.99% arrive within 1.5 ms and the worst is about 7.6 ms.
-   - Fix: 8 ms.
+   - Fix: 8 ms; since the early capture read (entry 44), 1.5 ms.
    - `fa4b4d0` (20 → 4 ms), `1168377` (measurement), `a91aad6` (8 ms).
 9. **The second stream fails with "Failed to claim Play/Cap interfaces".**
    - Cause: `ioDataWithCapacity:` buffers outlived the stream and kept the interface claimed.
@@ -520,7 +590,8 @@ build; *(hook)* uses `tools/latency/bin/sl2dbg`.
 32. **SL2Api's exported functions didn't match Rane's: Serato's hardware check and thru control broken.**
     - Cause: `SL2_driver_timer` and `SL2_send_hidimsg` had the wrong signatures (and most other exports had
       wrong signatures or return codes), written without Rane's framework to compare against.
-    - Fix: every export matches Rane's; the control panel's disconnect event; the latency slider.
+    - Fix: every export matches Rane's; the control panel's disconnect event; the latency slider of Rane's
+      control panel (`RH_set_buffer_millisecs`; Serato doesn't use it, see Results).
     - Test: `sl2apitest` (the seven functions Serato imports, called as Serato does); Rane's control panel;
       Serato DJ Pro 2.5.5 with turntables (the hardware check passes, Rel/Abs unlock, per-deck thru).
     - `014a0b2`.
@@ -552,13 +623,24 @@ build; *(hook)* uses `tools/latency/bin/sl2dbg`.
       loaded.
     - Test: replug with Serato 2.5.5 open; it picks the box up again (SL2Api's log shows the wait).
       `de68e8d`.
+44. **Input waited for capture completions: an 8 ms input safety offset, and a gap on longer stalls.**
+    - Cause: captured frames reached the ring only from the completion handler, which can be delivered
+      7.6 ms late idle and 12–18 ms late under heavy load, although the data is in memory during its
+      microframe.
+    - Fix: the early read (ReadInput places arrived packets from the queued buffers, counted by marking
+      the buffers), and an input safety offset of 1.5 ms.
+    - Test: `make hwtest` "early capture read" *(debug)*: `sl2dbg stall 20` during `sinetest`, no gap and
+      the counters clean; `dptest.sh`; `rtlat` at 64 frames
+      (≈9.3 ms DVS round trip); `DBG early read` counters *(debug)*.
+    - `19669c5`, `ffbe09c`.
 
 ## Testing
 
 `make hwtest` runs the hardware tests in one go, in the order that needs the fewest physical steps, and
 ends with a PASS / FAIL / SKIP summary (`ARGS="--loopback"` with the loopback cable in). It covers the
-status, SL2Api as Serato calls it, rate switching, restarts, glitches (idle and loaded), 48 kHz, the
-output volume and mute (and that they survive a replug), the level meters, the fault hooks, the LINE/PHONO report, and unplug and replug while idle and mid-stream.
+status, SL2Api as Serato calls it, rate switching, the input safety offset setting, the early capture
+read working (no cable needed), restarts, glitches (idle and loaded), 48 kHz, the
+output volume and mute (and that they survive a replug), the level meters, the early capture read, the fault hooks, the LINE/PHONO report, and unplug and replug while idle and mid-stream.
 
 The tools are in `tools/latency/` (build them with `make latency`). Its README covers the loopback setup,
 what each tool does and the expected results. The main ones:
@@ -569,7 +651,7 @@ what each tool does and the expected results. The main ones:
 | `sinetest` | Plays a continuous 997 Hz sine through the loopback for N seconds. Flags any break in the sine recurrence (dropout, repeat, skip) and any drop in level |
 | `dptest.sh` | `sinetest` for N s idle, then with every core busy, with the driver's counters (debug build); PASS/FAIL |
 | `restartcheck.sh` | Three streams in a row; each must start cleanly and find its clicks; PASS/FAIL |
-| `sl2dbg` | Debug build only: input safety offset, stall the USB queue, error capture packets |
+| `sl2dbg` | Debug build only: stall the USB queue, error capture packets |
 
 `tools/install-sl2.sh` (run by `make install`) installs a build into the installed driver bundle (the
 release package must be installed first) and restarts coreaudiod and the processes that go stale.
@@ -594,16 +676,19 @@ Each was removed from the tip in its own commit.
 - `resyncs 0`;
 - sent − captured within ±2;
 - `rewritten samples 0`;
-- `capture packet errors` rarely above 0.
+- `capture packet errors` rarely above 0;
+- `DBG early read`: `completion found 0 different`, `SILENCE (not captured yet) 0`, and a least margin
+  above 0.5 ms (at the 1.5 ms input safety offset).
 
 **Debug commands** (`tools/latency/bin/sl2dbg`, handled by the driver, never sent to the box):
-- `insafe <ms>`: the input safety offset. The HAL reads safety offsets only at device setup, so it takes
-  effect for a device set up again (e.g. after restarting coreaudiod), not the running one.
-- `stall <ms>`: hold the USB queue once, as a completion-delivery stall would.
+- `stall <ms>`: hold the USB queue once, as a completion-delivery stall would. A stall shorter than the
+  capture queue (about 50 ms) is covered by the early read; a longer one leaves a gap and a "not
+  captured" line.
 - `errpkts <n>`: treat the next n capture packets as errored.
+- `noearly 1|0`: switch the early capture read off (on), as on a Mac where it can't work: the next
+  stream judges it not working.
 
 ## Still open
 
-- Possibly lowering the input safety offset further. Capture data is written to memory on time and only the
-  completion is late, so a real-time thread could detect it by marking each capture buffer's padding bytes.
-  Untested.
+- The output side (2 ms safety offset + 1.5 ms output latency) is set by the 1 ms write guard and 1 ms
+  transfers; shorter transfers or a smaller guard might save up to ~1 ms. Untested.
