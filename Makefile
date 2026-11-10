@@ -33,12 +33,12 @@ flash:
 	$(CC) $(ARCH) $(CFLAGS) -Itools -framework Foundation -framework CoreAudio -framework IOKit -framework IOUSBHost tools/firmware/sl2flash.m tools/SL2Passthrough.m -o sl2flash
 
 # latency and glitch test tools (tools/latency/README.md), built into tools/latency/bin
-LATENCY_TOOLS = rtlat sinetest chtone chrec devprobe setrate sl2dbg
+LATENCY_TOOLS = rtlat sinetest chtone chrec devprobe setrate sl2dbg volctl
 latency: $(addprefix tools/latency/bin/,$(LATENCY_TOOLS))
 
 tools/latency/bin/%: tools/latency/%.c tools/latency/common.h
 	@mkdir -p tools/latency/bin
-	$(CC) -O2 -framework CoreAudio -framework CoreFoundation $< -o $@
+	$(CC) -O2 -framework CoreAudio -framework CoreFoundation -framework AudioToolbox $< -o $@
 
 # the hardware tests in one run (tools/hwtest.sh), on the installed driver with a box attached
 # (install a debug build first, make install DEBUG=1, to also run the debug-only tests):
