@@ -5,7 +5,7 @@ CFLAGS = -fobjc-arc -O2
 # (tools/latency/bin/sl2dbg: input safety offset, test hooks); make install DEBUG=1 also installs it
 PLUGIN_DEFS = $(if $(DEBUG),-DSL2_DEBUG=1)
 
-all: plugin api panel dump flash
+all: plugin api panel dump flash controlpanel
 
 plugin:
 	$(CC) $(ARCH) -bundle $(CFLAGS) $(PLUGIN_DEFS) -framework Foundation -framework CoreAudio -framework IOKit -framework IOUSBHost plugin/SL2Device.m -o SL2Device
@@ -25,6 +25,14 @@ panel:
 dump:
 	$(CC) $(ARCH) $(CFLAGS) -framework Foundation -framework CoreAudio tools/sl2dump.m tools/SL2Passthrough.m -o sl2dump
 
+# SL 2 Control Panel.app (SwiftUI, universal), in the repository root
+controlpanel:
+	tools/controlpanel/build-app.sh
+
+# the installer package and download zip, built into build/ (VERSION=x.y.z, default 1.3.0)
+package:
+	Installer/build-pkg.sh $(VERSION)
+
 # sl2apitest: checks SL2Api as Serato DJ Pro 2.5.5 uses it (run the x86_64 slice with arch -x86_64)
 apitest:
 	$(CC) $(ARCH) -O2 tools/sl2apitest.c -o sl2apitest
@@ -33,7 +41,7 @@ flash:
 	$(CC) $(ARCH) $(CFLAGS) -Itools -framework Foundation -framework CoreAudio -framework IOKit -framework IOUSBHost tools/firmware/sl2flash.m tools/SL2Passthrough.m -o sl2flash
 
 # latency and glitch test tools (tools/latency/README.md), built into tools/latency/bin
-LATENCY_TOOLS = rtlat sinetest chtone chrec devprobe setrate sl2dbg volctl
+LATENCY_TOOLS = rtlat sinetest chtone chrec devprobe setrate sl2dbg volctl meters
 latency: $(addprefix tools/latency/bin/,$(LATENCY_TOOLS))
 
 tools/latency/bin/%: tools/latency/%.c tools/latency/common.h
@@ -49,6 +57,6 @@ hwtest: panel apitest latency
 
 clean:
 	rm -f SL2Device SL2Api sl2panel sl2dump sl2flash sl2apitest
-	rm -rf tools/latency/bin
+	rm -rf tools/latency/bin "SL 2 Control Panel.app" build
 
-.PHONY: all plugin install api panel dump flash apitest latency hwtest clean
+.PHONY: all plugin install api panel dump flash controlpanel package apitest latency hwtest clean
