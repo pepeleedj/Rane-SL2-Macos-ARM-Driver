@@ -7,3 +7,5 @@
 *.o
 *.dSYM/
 .DS_Store
+/tools/latency/bin/
+/sl2apitest
