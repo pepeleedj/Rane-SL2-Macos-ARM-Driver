@@ -32,6 +32,9 @@
 #include <stdatomic.h>
 #include <math.h>
 
+#ifndef SL2_VERSION
+#define SL2_VERSION  "1.3.0"
+#endif
 #define VID          0x1cc5
 #define PID          0x0013
 #define BCD_LOADER   0x0000  /* USB bootloader: EEPROM has no bootable firmware ("Unnamed Device") */
@@ -2067,7 +2070,7 @@ static OSStatus SL2_Initialize(AudioServerPlugInDriverRef inDriver, AudioServerP
     mach_timebase_info(&g_tb);
     clk_reset();
     start_hotplug_monitor();
-    LOG("SL2Device AudioServerPlugIn Initialized");
+    LOG("SL2Device %s (%s) AudioServerPlugIn Initialized", SL2_VERSION, SL2_DEBUG ? "DEBUG" : "release");
     return kAudioHardwareNoError;
 }
 

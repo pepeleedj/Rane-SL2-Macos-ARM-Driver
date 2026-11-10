@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>BuildMachineOSBuild</key>
-	<string>15G7a</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>
@@ -24,20 +22,6 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>2.0.1f2</string>
-	<key>DTCompiler</key>
-	<string>com.apple.compilers.llvm.clang.1_0</string>
-	<key>DTPlatformBuild</key>
-	<string>7D175</string>
-	<key>DTPlatformVersion</key>
-	<string>GM</string>
-	<key>DTSDKBuild</key>
-	<string>15E60</string>
-	<key>DTSDKName</key>
-	<string>macosx10.11</string>
-	<key>DTXcode</key>
-	<string>0730</string>
-	<key>DTXcodeBuild</key>
-	<string>7D175</string>
 	<key>IOKitPersonalities</key>
 	<dict>
 		<key>SL2</key>
@@ -74,21 +58,6 @@
 			<key>idVendor</key>
 			<integer>7365</integer>
 		</dict>
-	</dict>
-	<key>OSBundleLibraries_x86_64</key>
-	<dict>
-		<key>com.apple.iokit.IOAudioFamily</key>
-		<string>1.6.4</string>
-		<key>com.apple.iokit.IOUSBFamily</key>
-		<string>3.0.3</string>
-		<key>com.apple.iokit.IOUSBHostFamily</key>
-		<string>1.0.1</string>
-		<key>com.apple.kpi.iokit</key>
-		<string>10.0.0</string>
-		<key>com.apple.kpi.libkern</key>
-		<string>10.0.0</string>
-		<key>com.apple.kpi.mach</key>
-		<string>10.0.0</string>
 	</dict>
 </dict>
 </plist>

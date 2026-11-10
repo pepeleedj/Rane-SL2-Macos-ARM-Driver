@@ -3,7 +3,9 @@
 # into output-dir (default: the repository root), ad-hoc signed. Run by `make controlpanel`.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT=${1:-$(cd "$HERE/../.." && pwd)}
+ROOT=$(cd "$HERE/../.." && pwd)
+OUT=${1:-$ROOT}
+VERSION=$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo "1.3.0")
 APP="$OUT/SL 2 Control Panel.app"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -25,6 +27,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create "$TMP/SL2ControlPanel-arm64" "$TMP/SL2ControlPanel-x86_64" -output "$APP/Contents/MacOS/SL2ControlPanel"
 cp "$HERE/Info.plist" "$APP/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
 cp "$TMP/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 codesign --force --sign - "$APP"
 echo "built $APP"

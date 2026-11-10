@@ -1,6 +1,7 @@
 CC = clang
 ARCH = -arch arm64 -arch x86_64
-CFLAGS = -fobjc-arc -O2
+VERSION ?= $(shell tr -d '[:space:]' < VERSION)
+CFLAGS = -fobjc-arc -O2 -DSL2_VERSION=\"$(VERSION)\"
 # make plugin DEBUG=1 builds the driver with its streaming diagnostics and its debug commands
 # (tools/latency/bin/sl2dbg: input safety offset, test hooks); make install DEBUG=1 also installs it
 PLUGIN_DEFS = $(if $(DEBUG),-DSL2_DEBUG=1)
@@ -17,7 +18,7 @@ install: plugin
 	sudo tools/install-sl2.sh
 
 api:
-	$(CC) $(ARCH) -dynamiclib $(CFLAGS) -install_name /Library/Frameworks/SL2Api.framework/Versions/A/SL2Api -current_version 1.1.0 -compatibility_version 1.0.0 -framework Foundation -framework CoreAudio -framework IOKit tools/SL2Api.m -o SL2Api
+	$(CC) $(ARCH) -dynamiclib $(CFLAGS) -install_name /Library/Frameworks/SL2Api.framework/Versions/A/SL2Api -current_version $(VERSION) -compatibility_version 1.0.0 -framework Foundation -framework CoreAudio -framework IOKit tools/SL2Api.m -o SL2Api
 
 panel:
 	$(CC) $(ARCH) $(CFLAGS) -framework Foundation -framework CoreAudio -framework IOKit tools/sl2panel.m -o sl2panel

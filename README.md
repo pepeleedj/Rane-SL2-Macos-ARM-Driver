@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Native User-Space CoreAudio Driver + Serato DJ Pro 2.5.5 Bridge (<code>SL2Api.framework</code>) for Rane SL 2 on Modern Macs</strong><br>
-  <em>Original idea & project by <strong>pepelee (PPLEE)</strong> — <a href="https://www.instagram.com/pepeleedj/">@pepeleedj</a></em>
+  <em>Original idea & project by <strong>pepelee (PPLEE)</strong> — <a href="https://www.instagram.com/pepeleedj/">@pepeleedj</a> &nbsp;|&nbsp; Co-authored & maintained with <strong>Ben XO</strong> (<a href="https://github.com/ben-xo">@ben-xo</a>)</em>
 </p>
 
 <p align="center">
@@ -22,6 +22,7 @@ When Apple transitioned to **Apple Silicon (M1 / M2 / M3 / M4)** and modern macO
 
 **This project ports the proven Rane SL3 user-space architecture to the Rane SL 2 on Apple Silicon Macs (M1, M2, M3, M4 — Base, Pro, Max, Ultra) and modern macOS (Monterey, Ventura, Sonoma, Sequoia, and newer):**
 
+* ✅ **Ultra-Low-Latency DVS Engine (~9.3 ms round trip at 64 frames / 48 kHz):** Deep-scheduled late-write playback + early-read DMA capture (`docs/SL2-AUDIO-ENGINE.md`).
 * ✅ **Designed for Serato DJ Pro 2.5.5** (the last Serato version that supports Rane SL 2 hardware—unlocks DVS `ABS` / `REL` / `INT` modes and `THRU` control via `SL2Api.framework`).
 * ✅ **NO SIP Disable Required & NO Reboot Required:** Runs 100% in user space via Apple's modern `AudioServerPlugIn` (CoreAudio HAL) and `IOUSBHost` frameworks, plus a custom Universal `SL2Api.framework` user-space bridge.
 * ✅ **Includes the SL 2 Control Panel app** (in Applications, macOS 13+) and a terminal control utility (`sl2panel`) to show the status (including the box's **Phono / Line** switch), toggle **Thru**, and change sample rates (**44.1 kHz / 48 kHz**).
@@ -72,7 +73,8 @@ Con la llegada de los procesadores **Apple Silicon (M1 / M2 / M3 / M4)** y los n
 ---
 
 ### 🙌 Créditos y Licencia / Credits & License
-* **Idea original, puente Serato (`SL2Api.framework`), utilidad `sl2panel` e instalador macOS Universal:** **pepelee (PPLEE)** — Instagram: [@pepeleedj](https://www.instagram.com/pepeleedj/)
+* **Original idea, CoreAudio HAL architecture, Serato (`SL2Api.framework`) bridge, `sl2panel` & Universal Installer:** **pepelee (PPLEE)** — Instagram: [@pepeleedj](https://www.instagram.com/pepeleedj/)
+* **Ultra-low-latency audio engine (deep-schedule late-write + early-read capture), `SL 2 Control Panel.app`, macOS volume/mute controls, firmware recovery toolkit (`sl2dump` / `sl2flash`), hardware test suite & protocol documentation:** **Ben XO** — GitHub: [@ben-xo](https://github.com/ben-xo)
 * **Licencia:** [GPL-3.0-or-later](LICENSE).
 * *Disclaimer:* Proyecto independiente no afiliado con Rane ni Serato.
 

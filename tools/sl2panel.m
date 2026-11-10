@@ -9,6 +9,9 @@
 #import <IOKit/IOKitLib.h>
 #import <IOKit/usb/IOUSBLib.h>
 
+#ifndef SL2_VERSION
+#define SL2_VERSION  "1.3.0"
+#endif
 #define kSL2PropHIDCommand  'sl2h'
 #define kSL2PropStatus      'sl2s'
 #define kSL2PropInSafety    'sl2i'
@@ -144,6 +147,10 @@ static void print_status(AudioObjectID dev) {
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
+            printf("sl2panel %s\n", SL2_VERSION);
+            return 0;
+        }
         /* Find the driver's device; without it, say whether a box is attached at all. */
         AudioObjectID dev = find_hal_device();
         if (dev == kAudioObjectUnknown) {

@@ -13,8 +13,9 @@
 #   /usr/local/bin/sl2panel, sl2dump, sl2flash
 # with Installer/package/scripts as its pre- and post-install scripts.
 set -euo pipefail
-VERSION=${1:-1.3.0}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+DEFAULT_VER=$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || echo "1.3.0")
+VERSION=${1:-$DEFAULT_VER}
 PKGSRC="$ROOT/Installer/package"
 OUT="$ROOT/build"
 WORK=$(mktemp -d)
@@ -30,6 +31,8 @@ tools/controlpanel/build-app.sh "$WORK"
 DRV="$STAGE/Library/Audio/Plug-Ins/HAL/SL2Device.driver"
 mkdir -p "$DRV/Contents/MacOS"
 cp -X plugin/Device-Info.plist "$DRV/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$DRV/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$VERSION" "$DRV/Contents/Info.plist"
 cp -X SL2Device "$DRV/Contents/MacOS/SL2Device"
 codesign --force --sign - "$DRV"
 
